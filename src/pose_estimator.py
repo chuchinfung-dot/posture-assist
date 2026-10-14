@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import cv2
 import mediapipe as mp
@@ -71,6 +72,7 @@ class PoseEstimator:
         )
         self._landmarker = mp_vision.PoseLandmarker.create_from_options(options)
         self._frame_ts_ms = 0
+        self._t0 = time.perf_counter()
         self._connections = list(mp_vision.PoseLandmarksConnections.POSE_LANDMARKS)
 
     def process(
@@ -79,7 +81,11 @@ class PoseEstimator:
         """Return named landmark dict and raw pose landmarks list (or None)."""
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        self._frame_ts_ms += 33  # ~30 FPS clock for VIDEO mode
+        # Monotonic ms clock required by VIDEO mode
+        ts = int((time.perf_counter() - self._t0) * 1000)
+        if ts <= self._frame_ts_ms:
+            ts = self._frame_ts_ms + 1
+        self._frame_ts_ms = ts
         result = self._landmarker.detect_for_video(mp_image, self._frame_ts_ms)
 
         if not result.pose_landmarks:

@@ -30,21 +30,39 @@ bash scripts/download_model.sh   # 下载 MediaPipe Pose Landmarker（~5.5MB）
 
 > 本仓库使用 **MediaPipe Tasks API**（`PoseLandmarker`），模型文件：`models/pose_landmarker_lite.task`。
 
-## 运行
+## 运行（推荐：本地 OpenCV 窗口）
 
 ```bash
 source .venv/bin/activate
-streamlit run app.py
+python main.py
 ```
 
-浏览器打开后：
+会弹出摄像头窗口。**第一次请先坐直，按 `c` 校准**，再测托腮 / 凑近。
 
-1. 允许摄像头权限  
-2. （建议）坐在舒适距离，点侧边栏 **「校准当前距离」**  
-3. 点 **「开始」**  
-4. 故意托腮 / 伸颈 / 歪头 / 凑近萤幕，持续超过设定秒数应出现提醒  
+| 键 | 作用 |
+|----|------|
+| `c` | 校准距离 + 颈前倾基准（重要） |
+| `s` | 开关骨架/手部点 |
+| `m` | 开关提示音 |
+| `d` | 开关调试数值（chin距 / hands 等） |
+| `q` / `Esc` | 退出 |
 
-告警会写入 `data/posture_log.csv`；校准值保存在 `data/calibration.json`（本地，默认不提交 git）。
+- 托腮：Hand Landmarker（橙色手部点）  
+- 颈部：Face Landmarker 的 **pitch/roll** + Pose 颈角，相对 `c` 校准基准  
+
+画面上方：黄色「监测中」= 实时侦测计时；红色 = 正式告警。调试行可见 `pitch=` / `roll=`（`face=Y` 表示脸部姿态可用）。
+
+```bash
+python main.py --dwell 3 --tilt 10 --pitch 10
+```
+
+告警写入 `data/posture_log.csv`；校准保存在 `data/calibration.json`。
+
+### 可选：Streamlit 网页版
+
+```bash
+streamlit run app.py
+```
 
 ## 使用提示
 
