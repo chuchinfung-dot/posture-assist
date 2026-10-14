@@ -1,5 +1,7 @@
 mediapipe==1.1.0
-opencv-python>=4.8.0
 numpy>=1.26.0
 Pillow>=10.0.0
-streamlit>=1.28.0
+av>=12.0.0
+pygame>=2.5.0
+# Headless OpenCV only so MediaPipe can import; no GUI/SDL conflict with Pygame.
+opencv-python-headless>=4.8.0

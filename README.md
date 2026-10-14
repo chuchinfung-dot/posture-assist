@@ -30,39 +30,42 @@ bash scripts/download_model.sh   # 下载 MediaPipe Pose Landmarker（~5.5MB）
 
 > 本仓库使用 **MediaPipe Tasks API**（`PoseLandmarker`），模型文件：`models/pose_landmarker_lite.task`。
 
-## 运行（推荐：本地 OpenCV 窗口）
+## 运行（PyAV 摄像头 + Pygame 窗口，**不使用 OpenCV**）
 
 ```bash
 source .venv/bin/activate
-python main.py
+pip install -r requirements.txt
+python -u main.py
 ```
 
-会弹出摄像头窗口。**第一次请先坐直，按 `c` 校准**，再测托腮 / 凑近。
+或双击 `run.command`（macOS 系统终端）。
+
+| 层 | 技术 |
+|----|------|
+| 采集 | **PyAV**（macOS `avfoundation`） |
+| 显示 | **Pygame** |
+| 侦测 | **MediaPipe** Pose / Hand / Face |
+| 文字叠加 | Pillow |
+
+应用代码已不再调用 OpenCV。环境里可能仍有 `opencv-contrib`（MediaPipe 依赖），但摄像头/窗口/画骨架都唔经 OpenCV。
+
+**第一次请先坐直，按 `c` 校准**，再测托腮 / 凑近 / 颈部。
 
 | 键 | 作用 |
 |----|------|
-| `c` | 校准距离 + 颈前倾基准（重要） |
+| `c` | 校准距离 + 颈部基准 |
 | `s` | 开关骨架/手部点 |
 | `m` | 开关提示音 |
-| `d` | 开关调试数值（chin距 / hands 等） |
+| `d` | 开关调试数值 |
 | `q` / `Esc` | 退出 |
 
-- 托腮：Hand Landmarker（橙色手部点）  
-- 颈部：Face Landmarker 的 **pitch/roll** + Pose 颈角，相对 `c` 校准基准  
-
-画面上方：黄色「监测中」= 实时侦测计时；红色 = 正式告警。调试行可见 `pitch=` / `roll=`（`face=Y` 表示脸部姿态可用）。
-
 ```bash
-python main.py --dwell 3 --tilt 10 --pitch 10
+python -u main.py --dwell 3 --tilt 10 --pitch 10
 ```
 
-告警写入 `data/posture_log.csv`；校准保存在 `data/calibration.json`。
+告警：`data/posture_log.csv`；校准：`data/calibration.json`。
 
-### 可选：Streamlit 网页版
-
-```bash
-streamlit run app.py
-```
+> `app.py`（Streamlit）仍可能引用旧 OpenCV 路径，日常请用 `main.py`。
 
 ## 使用提示
 

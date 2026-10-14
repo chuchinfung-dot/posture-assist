@@ -54,24 +54,43 @@ def _face_width(lms: Dict[str, Landmark]) -> float:
     return max(abs(lms["left_ear"].x - lms["right_ear"].x), 1e-6)
 
 
-def _face_anchor_points(lms: Dict[str, Landmark]) -> List[Tuple[float, float]]:
+def _face_band(lms: Dict[str, Landmark]) -> dict:
+    """Lower-face geometry used for chin-rest (excludes forehead / nape)."""
     nose = lms["nose"]
     le, re = lms["left_ear"], lms["right_ear"]
     ley, rey = lms["left_eye"], lms["right_eye"]
     fw = _face_width(lms)
     eye_y = (ley.y + rey.y) / 2.0
     face_h = max(abs(nose.y - eye_y) * 2.8, fw * 0.55)
+    ear_y = (le.y + re.y) / 2.0
+    return {
+        "fw": fw,
+        "nose": nose,
+        "eye_y": eye_y,
+        "ear_y": ear_y,
+        "face_h": face_h,
+        # Only lower face / cheek — not near ears or crown
+        "anchors": [
+            (nose.x, nose.y + face_h * 0.55),  # chin
+            (nose.x, nose.y + face_h * 0.30),  # mouth
+            (nose.x - fw * 0.22, nose.y + face_h * 0.22),  # left cheek (front)
+            (nose.x + fw * 0.22, nose.y + face_h * 0.22),  # right cheek
+            (nose.x - fw * 0.18, nose.y + face_h * 0.42),  # left jaw
+            (nose.x + fw * 0.18, nose.y + face_h * 0.42),  # right jaw
+        ],
+        # Exclusion magnets: crown / nape / behind-ear
+        "nape_anchors": [
+            (nose.x, eye_y - face_h * 0.55),  # crown
+            (le.x, ear_y - face_h * 0.15),
+            (re.x, ear_y - face_h * 0.15),
+            (le.x, ear_y + face_h * 0.05),
+            (re.x, ear_y + face_h * 0.05),
+            ((le.x + re.x) / 2.0, ear_y - face_h * 0.25),  # back of head (top)
+        ],
+    }
 
-    chin = (nose.x, nose.y + face_h * 0.55)
-    mouth = (nose.x, nose.y + face_h * 0.28)
-    left_cheek = ((nose.x + le.x) / 2.0, (nose.y + le.y) / 2.0 + face_h * 0.12)
-    right_cheek = ((nose.x + re.x) / 2.0, (nose.y + re.y) / 2.0 + face_h * 0.12)
-    left_jaw = (le.x * 0.65 + nose.x * 0.35, nose.y + face_h * 0.4)
-    right_jaw = (re.x * 0.65 + nose.x * 0.35, nose.y + face_h * 0.4)
-    return [chin, mouth, left_cheek, right_cheek, left_jaw, right_jaw]
 
-
-def _min_hand_to_face(
+def _min_dist_norm(
     anchors: Sequence[Tuple[float, float]],
     points: Sequence[Landmark],
     face_w: float,
@@ -92,6 +111,152 @@ def _elbow_bent(shoulder: Landmark, elbow: Landmark, wrist: Landmark) -> bool:
     cos_a = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
     angle = float(np.degrees(np.arccos(cos_a)))
     return angle < 100.0
+
+
+def _hand_behind_neck(
+    lms: Dict[str, Landmark],
+    hand: HandTips,
+    band: dict,
+) -> bool:
+    """
+    True when hand is likely behind the head / on the nape
+    (common false positive for chin-rest).
+    """
+    fw = band["fw"]
+    eye_y = band["eye_y"]
+    ear_y = band["ear_y"]
+    face_h = band["face_h"]
+    nose = band["nose"]
+
+    pts = list(hand.tips) + list(hand.palm) + [hand.wrist]
+    # How close to nape/crown vs lower face
+    d_nape = _min_dist_norm(band["nape_anchors"], pts, fw)
+    d_chin = _min_dist_norm(band["anchors"], pts, fw)
+
+    ys = [p.y for p in pts]
+    xs = [p.x for p in pts]
+    top_y = min(ys)
+    mid_y = float(np.median(ys))
+    mid_x = float(np.median(xs))
+
+    # Hand mass above the eyes / near crown
+    above_eyes = top_y < eye_y - face_h * 0.05
+    near_ear_height = abs(mid_y - ear_y) < face_h * 0.35
+    outside_cheek = abs(mid_x - nose.x) > fw * 0.45
+
+    # Raised elbow typical of "hand behind head"
+    left = mid_x < nose.x
+    shoulder = lms["left_shoulder"] if left else lms["right_shoulder"]
+    elbow = lms["left_elbow"] if left else lms["right_elbow"]
+    elbow_raised = elbow.y < shoulder.y - fw * 0.08
+
+    # Wrist above ear line
+    wrist_high = hand.wrist.y < ear_y + face_h * 0.05
+
+    if d_nape + 0.08 < d_chin:
+        return True
+    if above_eyes and (near_ear_height or outside_cheek):
+        return True
+    if elbow_raised and wrist_high and d_nape < 0.85:
+        return True
+    if wrist_high and outside_cheek and d_chin > 0.35:
+        return True
+    return False
+
+
+def _points_in_chin_zone(
+    points: Sequence[Landmark], band: dict
+) -> List[Landmark]:
+    """Keep only hand points that sit in the lower-face / cheek band."""
+    eye_y = band["eye_y"]
+    face_h = band["face_h"]
+    nose = band["nose"]
+    fw = band["fw"]
+    y_top = eye_y + face_h * 0.02  # allow slightly below eyes only
+    y_bot = nose.y + face_h * 0.85
+    kept: List[Landmark] = []
+    for p in points:
+        if p.y < y_top or p.y > y_bot:
+            continue
+        if abs(p.x - nose.x) > fw * 0.70:
+            continue
+        kept.append(p)
+    return kept
+
+
+def _evaluate_chin_rest(
+    lms: Dict[str, Landmark],
+    hands: List[HandTips],
+    *,
+    chin_rest_threshold: float,
+) -> Tuple[bool, float, float]:
+    """
+    Returns (chin_rest, chin_dist_norm, chin_score).
+    Rejects hand-behind-neck / crown poses.
+    """
+    band = _face_band(lms)
+
+    # Drop whole hands that look like nape / behind-head
+    valid_hands = [h for h in hands if not _hand_behind_neck(lms, h, band)]
+
+    hand_points: List[Landmark] = []
+    for hand in valid_hands:
+        hand_points.extend(hand.tips)
+        hand_points.extend(hand.palm)
+        # Wrist only if also in lower-face band (avoid high wrists)
+        hand_points.append(hand.wrist)
+
+    hand_points = _points_in_chin_zone(hand_points, band)
+
+    if not hand_points:
+        # Pose fallback — same zone filter; still reject raised-elbow nape
+        pose_candidates = [
+            lms["left_wrist"],
+            lms["right_wrist"],
+            lms["left_index"],
+            lms["right_index"],
+        ]
+        # If either elbow is raised high with wrist high → treat as nape, skip
+        for side in ("left", "right"):
+            sh = lms[f"{side}_shoulder"]
+            el = lms[f"{side}_elbow"]
+            wr = lms[f"{side}_wrist"]
+            if el.y < sh.y - band["fw"] * 0.08 and wr.y < band["ear_y"] + band["face_h"] * 0.1:
+                pose_candidates = [
+                    p
+                    for p in pose_candidates
+                    if p is not wr and p is not lms[f"{side}_index"]
+                ]
+        hand_points = _points_in_chin_zone(pose_candidates, band)
+
+    if not hand_points:
+        return False, 1.0, 0.0
+
+    chin_dist = _min_dist_norm(band["anchors"], hand_points, band["fw"])
+    # Must be clearly closer to chin/cheek than to nape
+    d_nape = _min_dist_norm(band["nape_anchors"], hand_points, band["fw"])
+    if d_nape + 0.12 < chin_dist:
+        return False, 1.0, 0.0
+
+    left_bent = _elbow_bent(lms["left_shoulder"], lms["left_elbow"], lms["left_wrist"])
+    right_bent = _elbow_bent(
+        lms["right_shoulder"], lms["right_elbow"], lms["right_wrist"]
+    )
+    # Only boost if the bent arm's wrist is in the chin zone (not raised nape)
+    bent_boost = 0.0
+    if left_bent and any(
+        abs(p.x - lms["left_wrist"].x) < 0.15 for p in hand_points
+    ):
+        bent_boost = 0.08
+    if right_bent and any(
+        abs(p.x - lms["right_wrist"].x) < 0.15 for p in hand_points
+    ):
+        bent_boost = max(bent_boost, 0.08)
+
+    thr = chin_rest_threshold + bent_boost
+    chin_rest = chin_dist < thr
+    chin_score = max(0.0, thr - chin_dist)
+    return chin_rest, float(chin_dist), float(chin_score)
 
 
 def _pose_neck_geometry(lms: Dict[str, Landmark]) -> dict:
@@ -164,33 +329,11 @@ def evaluate_posture(
     hands = hands or []
     geom = _pose_neck_geometry(lms)
     fw = geom["fw"]
-    anchors = _face_anchor_points(lms)
 
-    # --- Chin rest (unchanged logic) ---
-    hand_points: List[Landmark] = []
-    for hand in hands:
-        hand_points.extend(hand.tips)
-        hand_points.extend(hand.palm)
-        hand_points.append(hand.wrist)
-
-    if hand_points:
-        chin_dist = _min_hand_to_face(anchors, hand_points, fw)
-    else:
-        pose_hands = [
-            lms["left_wrist"],
-            lms["right_wrist"],
-            lms["left_index"],
-            lms["right_index"],
-        ]
-        chin_dist = _min_hand_to_face(anchors, pose_hands, fw)
-
-    left_bent = _elbow_bent(lms["left_shoulder"], lms["left_elbow"], lms["left_wrist"])
-    right_bent = _elbow_bent(
-        lms["right_shoulder"], lms["right_elbow"], lms["right_wrist"]
+    # --- Chin rest (rejects hand-behind-neck / crown) ---
+    chin_rest, chin_dist, chin_score = _evaluate_chin_rest(
+        lms, hands, chin_rest_threshold=chin_rest_threshold
     )
-    bent_boost = 0.12 if (left_bent or right_bent) else 0.0
-    chin_score = max(0.0, (chin_rest_threshold + bent_boost) - chin_dist)
-    chin_rest = chin_dist < (chin_rest_threshold + bent_boost)
 
     # --- Merge face pose if present ---
     if head_pose is not None and head_pose.ok:

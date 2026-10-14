@@ -1,4 +1,4 @@
-"""MediaPipe Hand Landmarker — accurate fingertips for chin-rest detection."""
+"""MediaPipe Hand Landmarker — RGB in, no OpenCV."""
 
 from __future__ import annotations
 
@@ -7,19 +7,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import cv2
 import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python import BaseOptions
 from mediapipe.tasks.python import vision as mp_vision
 
+from .draw_utils import draw_hand_landmarks
 from .pose_estimator import Landmark
 
 DEFAULT_MODEL = (
     Path(__file__).resolve().parent.parent / "models" / "hand_landmarker.task"
 )
 
-# Key fingertip / palm indices
 WRIST = 0
 THUMB_TIP = 4
 INDEX_TIP = 8
@@ -33,8 +32,8 @@ MIDDLE_MCP = 9
 @dataclass
 class HandTips:
     wrist: Landmark
-    tips: List[Landmark]  # thumb..pinky tips
-    palm: List[Landmark]  # MCP joints near palm
+    tips: List[Landmark]
+    palm: List[Landmark]
 
 
 class HandEstimator:
@@ -60,11 +59,12 @@ class HandEstimator:
         self._landmarker = mp_vision.HandLandmarker.create_from_options(options)
         self._frame_ts_ms = 0
         self._t0 = time.perf_counter()
-        self._connections = list(mp_vision.HandLandmarksConnections.HAND_CONNECTIONS)
+        self.connections = list(mp_vision.HandLandmarksConnections.HAND_CONNECTIONS)
 
-    def process(self, frame_bgr: np.ndarray) -> Tuple[List[HandTips], list]:
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+    def process(self, frame_rgb: np.ndarray) -> Tuple[List[HandTips], list]:
+        if not frame_rgb.flags.writeable:
+            frame_rgb = np.ascontiguousarray(frame_rgb)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         ts = int((time.perf_counter() - self._t0) * 1000)
         if ts <= self._frame_ts_ms:
             ts = self._frame_ts_ms + 1
@@ -92,21 +92,8 @@ class HandEstimator:
             )
         return hands, raw
 
-    def draw(self, frame_bgr: np.ndarray, hand_landmarks_list: list) -> np.ndarray:
-        out = frame_bgr.copy()
-        for hand_lms in hand_landmarks_list:
-            mp_vision.drawing_utils.draw_landmarks(
-                out,
-                hand_lms,
-                self._connections,
-                landmark_drawing_spec=mp_vision.drawing_utils.DrawingSpec(
-                    color=(255, 100, 0), thickness=2, circle_radius=3
-                ),
-                connection_drawing_spec=mp_vision.drawing_utils.DrawingSpec(
-                    color=(0, 140, 255), thickness=2
-                ),
-            )
-        return out
+    def draw(self, frame_rgb: np.ndarray, hand_landmarks_list: list) -> np.ndarray:
+        return draw_hand_landmarks(frame_rgb, hand_landmarks_list, self.connections)
 
     def close(self) -> None:
         self._landmarker.close()

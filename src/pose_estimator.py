@@ -1,4 +1,4 @@
-"""MediaPipe Pose Landmarker (Tasks API) — landmarks + skeleton overlay."""
+"""MediaPipe Pose Landmarker (Tasks API) — RGB in, no OpenCV."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-import cv2
 import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python import BaseOptions
 from mediapipe.tasks.python import vision as mp_vision
 
-# Landmark indices (same as classic MediaPipe Pose)
+from .draw_utils import draw_pose_landmarks
+
 NOSE = 0
 LEFT_EYE = 2
 RIGHT_EYE = 5
@@ -37,7 +37,7 @@ DEFAULT_MODEL = (
 
 @dataclass
 class Landmark:
-    x: float  # normalized [0, 1]
+    x: float
     y: float
     z: float
     visibility: float
@@ -47,8 +47,6 @@ class Landmark:
 
 
 class PoseEstimator:
-    """Estimate body pose with MediaPipe Tasks PoseLandmarker."""
-
     def __init__(
         self,
         model_path: Optional[Path] = None,
@@ -58,10 +56,7 @@ class PoseEstimator:
     ) -> None:
         path = Path(model_path) if model_path else DEFAULT_MODEL
         if not path.exists():
-            raise FileNotFoundError(
-                f"Pose model not found: {path}. "
-                "Download pose_landmarker_lite.task into models/."
-            )
+            raise FileNotFoundError(f"Pose model not found: {path}")
 
         options = mp_vision.PoseLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=str(path)),
@@ -73,15 +68,14 @@ class PoseEstimator:
         self._landmarker = mp_vision.PoseLandmarker.create_from_options(options)
         self._frame_ts_ms = 0
         self._t0 = time.perf_counter()
-        self._connections = list(mp_vision.PoseLandmarksConnections.POSE_LANDMARKS)
+        self.connections = list(mp_vision.PoseLandmarksConnections.POSE_LANDMARKS)
 
     def process(
-        self, frame_bgr: np.ndarray
+        self, frame_rgb: np.ndarray
     ) -> Tuple[Optional[Dict[str, Landmark]], Optional[object]]:
-        """Return named landmark dict and raw pose landmarks list (or None)."""
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        # Monotonic ms clock required by VIDEO mode
+        if not frame_rgb.flags.writeable:
+            frame_rgb = np.ascontiguousarray(frame_rgb)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         ts = int((time.perf_counter() - self._t0) * 1000)
         if ts <= self._frame_ts_ms:
             ts = self._frame_ts_ms + 1
@@ -111,22 +105,8 @@ class PoseEstimator:
         }
         return named, lm_list
 
-    def draw(self, frame_bgr: np.ndarray, pose_landmarks) -> np.ndarray:
-        out = frame_bgr.copy()
-        if pose_landmarks is None:
-            return out
-        mp_vision.drawing_utils.draw_landmarks(
-            out,
-            pose_landmarks,
-            self._connections,
-            landmark_drawing_spec=mp_vision.drawing_utils.DrawingSpec(
-                color=(0, 255, 0), thickness=2, circle_radius=2
-            ),
-            connection_drawing_spec=mp_vision.drawing_utils.DrawingSpec(
-                color=(0, 200, 255), thickness=2
-            ),
-        )
-        return out
+    def draw(self, frame_rgb: np.ndarray, pose_landmarks) -> np.ndarray:
+        return draw_pose_landmarks(frame_rgb, pose_landmarks, self.connections)
 
     def close(self) -> None:
         self._landmarker.close()
@@ -136,4 +116,6 @@ def _to_lm(p) -> Landmark:
     vis = getattr(p, "visibility", None)
     if vis is None:
         vis = getattr(p, "presence", 1.0)
-    return Landmark(x=p.x, y=p.y, z=p.z, visibility=float(vis if vis is not None else 1.0))
+    return Landmark(
+        x=p.x, y=p.y, z=p.z, visibility=float(vis if vis is not None else 1.0)
+    )

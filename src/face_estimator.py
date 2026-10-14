@@ -1,4 +1,4 @@
-"""MediaPipe Face Landmarker — head pitch / yaw / roll from transform matrix."""
+"""MediaPipe Face Landmarker — RGB in, no OpenCV."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
-import cv2
 import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python import BaseOptions
@@ -20,20 +19,13 @@ DEFAULT_MODEL = (
 
 @dataclass
 class HeadPose:
-    """Euler angles in degrees (approx. camera space)."""
-
-    pitch: float  # + = chin down / nodding forward
-    yaw: float  # + = turn left/right
-    roll: float  # + = tilt (ear toward shoulder)
+    pitch: float
+    yaw: float
+    roll: float
     ok: bool = True
 
 
 def _rotation_to_euler(R: np.ndarray) -> Tuple[float, float, float]:
-    """
-    Extract pitch, yaw, roll (degrees) from a 3x3 rotation matrix.
-    Convention tuned for MediaPipe facial transformation matrices on a front webcam.
-    """
-    # Clamp for numerical safety
     r20 = float(np.clip(-R[2, 0], -1.0, 1.0))
     pitch = float(np.degrees(np.arcsin(r20)))
     yaw = float(np.degrees(np.arctan2(R[1, 0], R[0, 0])))
@@ -65,9 +57,10 @@ class FaceEstimator:
         self._frame_ts_ms = 0
         self._t0 = time.perf_counter()
 
-    def process(self, frame_bgr: np.ndarray) -> Optional[HeadPose]:
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+    def process(self, frame_rgb: np.ndarray) -> Optional[HeadPose]:
+        if not frame_rgb.flags.writeable:
+            frame_rgb = np.ascontiguousarray(frame_rgb)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         ts = int((time.perf_counter() - self._t0) * 1000)
         if ts <= self._frame_ts_ms:
             ts = self._frame_ts_ms + 1
@@ -80,8 +73,7 @@ class FaceEstimator:
         M = np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64)
         if M.size == 16:
             M = M.reshape(4, 4)
-        R = M[:3, :3]
-        pitch, yaw, roll = _rotation_to_euler(R)
+        pitch, yaw, roll = _rotation_to_euler(M[:3, :3])
         return HeadPose(pitch=pitch, yaw=yaw, roll=roll, ok=True)
 
     def close(self) -> None:
