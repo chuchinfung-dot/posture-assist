@@ -184,39 +184,84 @@ def _points_in_chin_zone(
     return kept
 
 
+def _hand_span_norm(hand: HandTips, face_w: float) -> float:
+    xs = [p.x for p in hand.tips]
+    ys = [p.y for p in hand.tips]
+    return float(np.hypot(max(xs) - min(xs), max(ys) - min(ys)) / max(face_w, 1e-6))
+
+
+def _hand_is_face_false_positive(hand: HandTips, band: dict) -> bool:
+    """
+    Close-up faces are often misread as a 'hand' glued onto the cheek.
+    Real hands usually have a larger tip span and a wrist offset from the face center.
+    """
+    fw = band["fw"]
+    nose = band["nose"]
+    span = _hand_span_norm(hand, fw)
+    if span < 0.18:
+        return True
+    # Wrist almost at nose/mouth → likely face landmarks mistaken as hand
+    if _dist(hand.wrist, nose) / fw < 0.25:
+        return True
+    # All tips clustered on face center
+    tips_near = sum(
+        1
+        for t in hand.tips
+        if abs(t.x - nose.x) < fw * 0.35 and abs(t.y - nose.y) < band["face_h"] * 0.45
+    )
+    if tips_near >= 4 and span < 0.35:
+        return True
+    return False
+
+
+def _face_very_close(lms: Dict[str, Landmark], band: dict) -> bool:
+    """True when the face fills much of the frame (leaning into the camera)."""
+    fw = band["fw"]
+    sw = _shoulder_width(lms)
+    # Absolute face size or face dominating shoulders
+    return fw >= 0.30 or (sw > 1e-6 and fw / sw >= 0.85)
+
+
 def _evaluate_chin_rest(
     lms: Dict[str, Landmark],
     hands: List[HandTips],
     *,
     chin_rest_threshold: float,
+    suppress_when_close: bool = True,
 ) -> Tuple[bool, float, float]:
     """
     Returns (chin_rest, chin_dist_norm, chin_score).
-    Rejects hand-behind-neck / crown poses.
+    Rejects hand-behind-neck / crown poses and close-up face false positives.
     """
     band = _face_band(lms)
+    close = _face_very_close(lms, band)
 
-    # Drop whole hands that look like nape / behind-head
-    valid_hands = [h for h in hands if not _hand_behind_neck(lms, h, band)]
+    # Drop nape poses and close-up face→hand misdetections
+    valid_hands = [
+        h
+        for h in hands
+        if not _hand_behind_neck(lms, h, band)
+        and not _hand_is_face_false_positive(h, band)
+    ]
 
     hand_points: List[Landmark] = []
+    used_hand_landmarks = False
     for hand in valid_hands:
+        used_hand_landmarks = True
         hand_points.extend(hand.tips)
         hand_points.extend(hand.palm)
-        # Wrist only if also in lower-face band (avoid high wrists)
         hand_points.append(hand.wrist)
 
     hand_points = _points_in_chin_zone(hand_points, band)
 
-    if not hand_points:
-        # Pose fallback — same zone filter; still reject raised-elbow nape
+    # When close to camera: never use Pose wrist fallback (very noisy / false chin-rest)
+    if not hand_points and not close:
         pose_candidates = [
             lms["left_wrist"],
             lms["right_wrist"],
             lms["left_index"],
             lms["right_index"],
         ]
-        # If either elbow is raised high with wrist high → treat as nape, skip
         for side in ("left", "right"):
             sh = lms[f"{side}_shoulder"]
             el = lms[f"{side}_elbow"]
@@ -232,8 +277,11 @@ def _evaluate_chin_rest(
     if not hand_points:
         return False, 1.0, 0.0
 
+    # Close-up without a real Hand Landmarker hand → not chin-rest
+    if close and not used_hand_landmarks:
+        return False, 1.0, 0.0
+
     chin_dist = _min_dist_norm(band["anchors"], hand_points, band["fw"])
-    # Must be clearly closer to chin/cheek than to nape
     d_nape = _min_dist_norm(band["nape_anchors"], hand_points, band["fw"])
     if d_nape + 0.12 < chin_dist:
         return False, 1.0, 0.0
@@ -242,7 +290,6 @@ def _evaluate_chin_rest(
     right_bent = _elbow_bent(
         lms["right_shoulder"], lms["right_elbow"], lms["right_wrist"]
     )
-    # Only boost if the bent arm's wrist is in the chin zone (not raised nape)
     bent_boost = 0.0
     if left_bent and any(
         abs(p.x - lms["left_wrist"].x) < 0.15 for p in hand_points
@@ -253,7 +300,16 @@ def _evaluate_chin_rest(
     ):
         bent_boost = max(bent_boost, 0.08)
 
-    thr = chin_rest_threshold + bent_boost
+    # Close to camera: require bent elbow (classic chin-rest), stricter distance
+    if close:
+        if not (left_bent or right_bent):
+            return False, 1.0, 0.0
+        thr = chin_rest_threshold * 0.65
+        if suppress_when_close and not used_hand_landmarks:
+            return False, 1.0, 0.0
+    else:
+        thr = chin_rest_threshold + bent_boost
+
     chin_rest = chin_dist < thr
     chin_score = max(0.0, thr - chin_dist)
     return chin_rest, float(chin_dist), float(chin_score)

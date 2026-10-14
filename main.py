@@ -105,6 +105,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dwell", type=float, default=3.0)
     p.add_argument("--chin", type=float, default=0.55)
     p.add_argument("--forward", type=float, default=0.14)
+    p.add_argument(
+        "--enable-forward",
+        action="store_true",
+        help="启用颈前倾侦测（默认关闭）",
+    )
     p.add_argument("--tilt", type=float, default=12.0)
     p.add_argument("--pitch", type=float, default=12.0)
     p.add_argument("--close-ratio", type=float, default=1.35)
@@ -133,7 +138,7 @@ def main() -> None:
 
     log("=" * 56)
     log("坐姿健康提醒（PyAV + Pygame，无 OpenCV）")
-    log("侦测仍用 MediaPipe Pose / Hand / Face")
+    log("侦测：托腮 / 头侧倾 / 萤幕过近（颈前倾默认关闭）")
     log("1) 坐直  2) 按 c 校准  3) 再测试")
     log("快捷键: c校准  s骨架  m声音  d调试  q退出")
     log("=" * 56)
@@ -233,6 +238,9 @@ def main() -> None:
                 ratio_s = smooth.update("ratio", dist.ratio)
 
                 chin_on = posture.chin_rest and chin_s < (args.chin + 0.12)
+                # 头凑近镜头时只报「过近」，不要误报托腮
+                if dist.too_close or dist.ratio >= max(args.close_ratio * 0.92, 1.15):
+                    chin_on = False
                 if posture_calib is not None:
                     tilt_on = tilt_s > args.tilt or posture.head_tilt
                     pitch0 = getattr(posture_calib, "pitch_deg", 0.0)
@@ -240,6 +248,9 @@ def main() -> None:
                 else:
                     tilt_on = posture.head_tilt
                     fwd_on = posture.forward_head
+                # 默认不侦测颈前倾（可用 --enable-forward 打开）
+                if not args.enable_forward:
+                    fwd_on = False
 
                 active = {
                     "chin_rest": chin_on,
